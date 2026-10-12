@@ -1,0 +1,50 @@
+# ZooKeeper + 3 SimpleKafka brokers.
+#
+# Two quirks of the broker shape this file:
+#  * It hardcodes its ZooKeeper address to "localhost" and uses <brokerHost>
+#    for both binding and advertising. So all three brokers share the
+#    ZooKeeper container's network namespace (network_mode: service:...) and
+#    everything talks over localhost. Run clients with `docker compose exec`
+#    (see README Quick Start); no ports are published.
+#  * Brokers started at the same instant race on registration and can end up
+#    with an incomplete view of the cluster. They are therefore started one
+#    after another, each waiting for the previous one to accept connections.
+services:
+  zookeeper:
+    image: zookeeper:3.9
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | timeout 2 bash -c 'cat >/dev/tcp/localhost/2181' || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  broker1:
+    build: .
+    command: ["java", "-jar", "/app/simplekafka.jar", "1", "localhost", "9092", "2181"]
+    network_mode: "service:zookeeper"
+    depends_on:
+      zookeeper: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9092'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: on-failure
+
+  broker2:
+    build: .
+    command: ["sh", "-c", "sleep 3 && exec java -jar /app/simplekafka.jar 2 localhost 9093 2181"]
+    network_mode: "service:zookeeper"
+    depends_on:
+      broker1: {condition: service_healthy}
+    restart: on-failure
+
+  broker3:
+    build: .
+    command: ["sh", "-c", "sleep 6 && exec java -jar /app/simplekafka.jar 3 localhost 9094 2181"]
+    network_mode: "service:zookeeper"
+    depends_on:
+      broker1: {condition: service_healthy}
+      broker2: {condition: service_started}
+    restart: on-failure
