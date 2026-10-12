@@ -15,6 +15,9 @@ wire-compatible with Apache Kafka, it has no tests yet, and it makes several
 simplifications that would lose data in a real deployment. See
 [Limitations](#limitations) before relying on it for anything.
 
+New to the terms (controller, partition leader, follower, topic)? See the
+[Glossary](GLOSSARY.md).
+
 ## Features
 
 - **Controller election via ZooKeeper.** Each broker registers an ephemeral
