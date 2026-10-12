@@ -30,8 +30,9 @@ New to the terms (controller, partition leader, follower, topic)? See the
 - **Segmented, indexed, on-disk log.** Each partition is an append-only log
   split into 1 MiB segments named by their base offset, with a per-segment
   index of offset-to-file-position entries. Every append is forced to disk.
-- **Partition leader and follower replication.** Producers write to the partition leader,
-  which appends locally and then replicates to its followers.
+- **Partition leader and follower replication.** Producers write to the
+  partition leader, which appends locally and then replicates to its
+  followers.
 - **Request forwarding.** A broker that receives a produce request for a
   partition it does not lead forwards it to the partition leader; a
   create-topic request sent to a non-controller is forwarded to the controller.
