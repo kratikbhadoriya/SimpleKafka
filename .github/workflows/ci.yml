@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Build
+        run: mvn -B package
+
+      - name: Verify shaded jar was produced
+        run: |
+          jar=$(ls target/SimpleKafka-*.jar | grep -v '^target/original-' | head -n 1)
+          test -n "$jar" && test -s "$jar"
+          echo "Shaded jar: $jar"
+          unzip -l "$jar" | grep -q 'org/apache/zookeeper/ZooKeeper.class'
