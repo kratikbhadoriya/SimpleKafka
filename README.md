@@ -169,8 +169,9 @@ Stop and clean up with `docker compose down -v`.
 The broker looks for ZooKeeper on `localhost`. Any ZooKeeper 3.x works; pick
 one of the two ways to start it.
 
-**Without Docker** (needs only a JDK): download a binary release from
-<https://zookeeper.apache.org/releases.html> and start it with the sample
+**Without Docker** (needs only a JDK): download any 3.x binary release from
+<https://zookeeper.apache.org/releases.html> (the commands assume 3.9.3;
+adjust the file name) and start it with the sample
 configuration, which listens on port 2181:
 
 ```bash
@@ -192,8 +193,9 @@ ZooKeeper already running on 2181:
 docker run -d --rm --name sk-zk -p 2182:2181 zookeeper:3.9
 ```
 
-The brokers below use ZooKeeper port 2182 (the Docker command); with the
-Docker-free sample configuration use `2181` or omit the argument.
+The broker commands below pass ZooKeeper port 2182 to match the Docker
+command. With the Docker-free sample configuration, replace `2182` with
+`2181` (or drop the last argument).
 
 Build the jar:
 
@@ -326,7 +328,8 @@ the simpler choice was made here. The known consequences are listed in
   in-sync replica has the message (subject to `min.insync.replicas`). Leader
   epochs let a returning replica truncate divergent entries.
 - **Trade-off.** Push-and-forget is the shortest path to a visible
-  partition-leader-to-follower copy and keeps the produce latency to the local forced writes of the log and index (no network round trip).
+  partition-leader-to-follower copy and keeps the produce latency to the
+  local forced writes of the log and index (no network round trip).
   It is roughly Kafka's `acks=1` with no ISR bookkeeping, and gives none of
   the guarantees the pull-based design provides: no catch-up, no truncation
   and no way to say which follower is safe to promote.
@@ -381,7 +384,7 @@ source:
   acknowledges the producer after its own local append and syncs it to disk;
   replication is fire-and-forget and a failed replicate is only logged. There
   is no in-sync set, high watermark or minimum-in-sync setting (comparable to
-  Kafka's `acks=1`), so an acknowledged message can be lost if the partition
+  Kafka's `acks=1`), so an acknowledged message can be lost if the
   partition leader fails before replicating.
 - **Followers never catch up, and may apply messages out of order.** A
   follower appends whatever the partition leader sends and does not check the
@@ -397,11 +400,11 @@ source:
 - **Failover is simplistic.** When a partition leader disappears, the
   controller picks the first broker in its cluster view as the new partition
   leader, which is not necessarily a follower that holds the data. There are
-  no partition leader epochs or log truncation, and the other brokers are not told about
-  the reassignment, so their in-memory view of the partition leader can go
+  no leader epochs or log truncation, and the other brokers are not told
+  about the reassignment, so their in-memory view of the partition leader can go
   stale.
 - **No rebalancing on cluster growth.** Partitions are reassigned only when
-  their leader has left; adding a broker does not move existing partitions.
+  their partition leader has left; adding a broker does not move existing partitions.
 - **Partition directories are inconsistent.** The controller creates a
   partition under `data/<topic>/<partition>`, but loading from ZooKeeper
   (which every broker does on restart) uses
@@ -465,7 +468,7 @@ source:
 - Follower catch-up and truncation, an in-sync set of followers and a high
   watermark so consumers only see replicated data; apply replicated messages
   in order.
-- Notify all brokers of partition leader changes and pick new partition
+- Notify all brokers of partition leader changes and pick new
   partition leaders from followers; do not cap followers on reassignment.
 - Close the index and log files in `Partition`, and make `readMessages`
   return an oversized first message (or fail loudly) instead of nothing.

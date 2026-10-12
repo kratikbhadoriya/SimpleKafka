@@ -9,6 +9,11 @@
 #  * Brokers started at the same instant race on registration and can end up
 #    with an incomplete view of the cluster. They are therefore started one
 #    after another, each waiting for the previous one to accept connections.
+#
+# Healthchecks only test that the TCP port accepts connections; they do not
+# prove the service is ready to serve requests.
+
+# Settings shared by the three brokers.
 x-broker: &broker
   build: .
   network_mode: "service:zookeeper"

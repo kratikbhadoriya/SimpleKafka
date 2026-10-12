@@ -45,7 +45,7 @@ _Avoid_: Chunk, block
 ## Replication
 
 **Replication factor**:
-The number of brokers that hold a copy of each partition of a topic: the leader plus its followers.
+The number of brokers that hold a copy of each partition of a topic: the partition leader plus its followers.
 _Avoid_: Copies, replica count
 
 **Partition leader**:
