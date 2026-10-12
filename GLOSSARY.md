@@ -31,12 +31,12 @@ One ordered, append-only log that holds a share of a topic's messages.
 _Avoid_: Shard, slice
 
 **Message**:
-A single record appended to a partition.
+A single unit of data appended to a partition.
 _Avoid_: Event, record, entry
 
 **Offset**:
 A message's position within its partition, starting at 0.
-_Avoid_: Index, sequence number, id
+_Avoid_: Sequence number, id
 
 **Segment**:
 A consecutive, bounded slice of a partition's messages; a partition is a sequence of segments.

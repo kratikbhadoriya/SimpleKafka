@@ -33,7 +33,7 @@ New to the terms (controller, partition leader, follower, topic)? See the
 - **Leader/follower replication.** Producers write to the partition leader,
   which appends locally and then replicates to its followers.
 - **Request forwarding.** A broker that receives a produce request for a
-  partition it does not lead forwards it to the leader; a create-topic request
+  partition it does not lead forwards it to the partition leader; a create-topic request
   sent to a non-controller is forwarded to the controller.
 - **Partition leader reassignment.** When the controller sees that a
   partition's leader has left the cluster it assigns a new partition leader
@@ -53,13 +53,13 @@ flowchart LR
     subgraph ZK["ZooKeeper"]
         zb["/brokers/id - ephemeral, host:port"]
         zc["/controller - ephemeral, broker id"]
-        zt["/topics/name/partitions/n - leader and followers"]
+        zt["/topics/name/partitions/n - partition leader and followers"]
     end
 
     subgraph Cluster["Broker cluster"]
-        B1["Broker 1 - CONTROLLER<br/>leader: p0, follower: p2"]
-        B2["Broker 2<br/>leader: p1, follower: p0"]
-        B3["Broker 3<br/>leader: p2, follower: p1"]
+        B1["Broker 1 - CONTROLLER<br/>leads p0, follows p2"]
+        B2["Broker 2<br/>leads p1, follows p0"]
+        B3["Broker 3<br/>leads p2, follows p1"]
     end
 
     Client["Producer / Consumer<br/>(SimpleKafkaClient)"]
@@ -95,11 +95,12 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant P as Producer
+    participant B as Any broker (bootstrap)
     participant L as Partition leader
     participant F as Follower
 
-    P->>L: METADATA request
-    L-->>P: brokers, topics, partition leaders
+    P->>B: METADATA request
+    B-->>P: brokers, topics, partition leaders
     P->>L: PRODUCE (topic, partition, message)
     Note over L: append to active segment, fsync, update index
     L-)F: REPLICATE (topic, partition, offset, message), async
@@ -165,13 +166,34 @@ Stop and clean up with `docker compose down -v`.
 
 ### Option 2: plain `java -jar`
 
-The broker looks for ZooKeeper on `localhost`. Start one (any ZooKeeper 3.x
-works; here via Docker, mapped to host port 2182 so it does not clash with a
-ZooKeeper already running on 2181):
+The broker looks for ZooKeeper on `localhost`. Any ZooKeeper 3.x works; pick
+one of the two ways to start it.
+
+**Without Docker** (needs only a JDK): download a binary release from
+<https://zookeeper.apache.org/releases.html> and start it with the sample
+configuration, which listens on port 2181:
+
+```bash
+tar xzf apache-zookeeper-3.9.3-bin.tar.gz
+cd apache-zookeeper-3.9.3-bin
+cp conf/zoo_sample.cfg conf/zoo.cfg
+bin/zkServer.sh start
+```
+
+Stop it later with `bin/zkServer.sh stop`. If something else already uses port
+2181 (or 8080, the ZooKeeper admin server), change `clientPort` and add
+`admin.serverPort=<free port>` in `conf/zoo.cfg`, and pass that client port
+as the last broker argument below.
+
+**With Docker**, mapped to host port 2182 so it does not clash with a
+ZooKeeper already running on 2181:
 
 ```bash
 docker run -d --rm --name sk-zk -p 2182:2181 zookeeper:3.9
 ```
+
+The brokers below use ZooKeeper port 2182 (the Docker command); with the
+Docker-free sample configuration use `2181` or omit the argument.
 
 Build the jar:
 
@@ -239,8 +261,8 @@ many bytes.
 
 | Type | Layout after the type byte | Notes |
 |------|----------------------------|-------|
-| `PRODUCE` | `string topic`, `int partition`, `bytes message` | A non-leader forwards it to the leader. |
-| `FETCH` | `string topic`, `int partition`, `long offset`, `int maxBytes` | The broker does not check that it leads the partition; the client sends it to the leader. |
+| `PRODUCE` | `string topic`, `int partition`, `bytes message` | A broker that is not the partition leader forwards it to the partition leader. |
+| `FETCH` | `string topic`, `int partition`, `long offset`, `int maxBytes` | The broker does not check that it is the partition leader; the client sends it to the partition leader. |
 | `METADATA` | (empty) | One-byte request. |
 | `CREATE_TOPIC` | `string topic`, `int numPartitions`, `short replicationFactor` | A non-controller forwards it to the controller. |
 | `REPLICATE` | `string topic`, `int partition`, `long offset`, `bytes message` | Partition leader to follower, internal. |
@@ -252,7 +274,7 @@ many bytes.
 |------|----------------------------|-------|
 | `PRODUCE_RESPONSE` | `long offset`, `byte status` | Status 0 is success, 1 means the local append failed (offset is then -1). |
 | `FETCH_RESPONSE` | `int count`, then `count` x (`long offset`, `bytes message`) | An empty fetch is `count = 0`. |
-| `METADATA_RESPONSE` | `int numBrokers`, then per broker (`int id`, `string host`, `int port`); `int numTopics`, then per topic (`string topic`, `int numPartitions`, then per partition `int id`, `int leader`, `int numFollowers`, `int followerId` x numFollowers) | The list contains followers only; the leader is not repeated in it. |
+| `METADATA_RESPONSE` | `int numBrokers`, then per broker (`int id`, `string host`, `int port`); `int numTopics`, then per topic (`string topic`, `int numPartitions`, then per partition `int id`, `int leader`, `int numFollowers`, `int followerId` x numFollowers) | The list contains followers only; the partition leader is not repeated in it. |
 | `CREATE_TOPIC_RESPONSE` | `byte status` | Always 0 on this path, even if the controller failed to create the topic internally (the failure is only logged). |
 | `ERROR_RESPONSE` | `string message` | Used for unknown topic or partition, invalid topic configuration, unknown message type and forwarding failures. |
 | `REPLICATE_ACK` | (none) | A single `0x22` byte on success. On unknown topic or partition the follower replies with a single `0x00` byte instead. |
@@ -274,7 +296,11 @@ the simpler choice was made here. The known consequences are listed in
   controller, and everyone else sets a watch on it and re-runs the election
   when it changes. Brokers also watch `/brokers` to keep their cluster view
   and, on change, the controller reassigns partitions whose partition leader
-  has gone.
+  has gone. Connecting to ZooKeeper also creates a persistent, empty
+  `/controller` placeholder; `electController` first deletes it if it has no
+  data and then creates the ephemeral node. That check-then-delete is not
+  atomic, so a broker can delete a controller node another broker has just
+  created.
 - **Kafka.** The same ZooKeeper-era mechanism (ephemeral `/controller` node),
   but with a monotonically increasing controller epoch that fences a stale
   controller, and the controller pushes leader and ISR changes to every
@@ -300,7 +326,7 @@ the simpler choice was made here. The known consequences are listed in
   in-sync replica has the message (subject to `min.insync.replicas`). Leader
   epochs let a returning replica truncate divergent entries.
 - **Trade-off.** Push-and-forget is the shortest path to a visible
-  partition-leader-to-follower copy and keeps the produce latency to one local fsync.
+  partition-leader-to-follower copy and keeps the produce latency to the local forced writes of the log and index (no network round trip).
   It is roughly Kafka's `acks=1` with no ISR bookkeeping, and gives none of
   the guarantees the pull-based design provides: no catch-up, no truncation
   and no way to say which follower is safe to promote.
@@ -356,7 +382,7 @@ source:
   replication is fire-and-forget and a failed replicate is only logged. There
   is no in-sync set, high watermark or minimum-in-sync setting (comparable to
   Kafka's `acks=1`), so an acknowledged message can be lost if the partition
-  leader fails before replicating.
+  partition leader fails before replicating.
 - **Followers never catch up, and may apply messages out of order.** A
   follower appends whatever the partition leader sends and does not check the
   offset (there is a `TODO: Repair the log` in `handleReplicationRequest`). A
@@ -371,7 +397,7 @@ source:
 - **Failover is simplistic.** When a partition leader disappears, the
   controller picks the first broker in its cluster view as the new partition
   leader, which is not necessarily a follower that holds the data. There are
-  no leader epochs or log truncation, and the other brokers are not told about
+  no partition leader epochs or log truncation, and the other brokers are not told about
   the reassignment, so their in-memory view of the partition leader can go
   stale.
 - **No rebalancing on cluster growth.** Partitions are reassigned only when
@@ -401,9 +427,16 @@ source:
   address. In Docker this is why the Compose file puts the brokers in
   ZooKeeper's network namespace and why clients must run inside the Compose
   network (see Quick Start).
+- **Producing to a new topic can fail on the first run.** When the producer
+  creates the topic on demand, topic creation is asynchronous and the
+  producer's next metadata lookup can still miss it, so the first run may
+  print `Topic doesn't exist: <topic>` even though the topic was created;
+  run the producer again.
 - **Simultaneous broker startup can race.** Brokers that register at the same
   instant can end up with an incomplete view of the cluster (observed while
-  verifying the Quick Start; the broker list is kept up to date by one-shot
+  verifying the Quick Start, and visible as `NoNode for /controller` errors in
+  the broker log when the `/controller` placeholder is deleted and re-created
+  concurrently; the broker list is kept up to date by one-shot
   ZooKeeper watches that are re-armed in their callback). The Compose file
   and the plain `java -jar` instructions therefore stagger startup.
 
@@ -433,7 +466,7 @@ source:
   watermark so consumers only see replicated data; apply replicated messages
   in order.
 - Notify all brokers of partition leader changes and pick new partition
-  leaders from followers; do not cap followers on reassignment.
+  partition leaders from followers; do not cap followers on reassignment.
 - Close the index and log files in `Partition`, and make `readMessages`
   return an oversized first message (or fail loudly) instead of nothing.
 - Fix the partition directory layout so a restarted controller recovers its
