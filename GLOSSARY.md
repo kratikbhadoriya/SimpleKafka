@@ -9,11 +9,11 @@ The set of brokers that are registered together and serve the same topics.
 _Avoid_: Group, farm
 
 **Broker**:
-A single server in the cluster that stores partition logs and answers client requests.
+A single server process in the cluster, identified by a broker id, that holds partitions.
 _Avoid_: Node, server, instance
 
 **Controller**:
-The one broker, elected from the cluster, that decides where topics and partitions live and reassigns partitions whose leader has left.
+The one broker, elected from the cluster, that is responsible for topic and partition placement.
 _Avoid_: Master, coordinator, manager
 
 **Metadata**:
@@ -39,7 +39,7 @@ A message's position within its partition, starting at 0.
 _Avoid_: Index, sequence number, id
 
 **Segment**:
-One of the consecutive files that together make up a partition's log.
+A consecutive, bounded slice of a partition's messages; a partition is a sequence of segments.
 _Avoid_: Chunk, block
 
 ## Replication
@@ -49,7 +49,7 @@ The number of brokers that hold a copy of each partition of a topic: the leader 
 _Avoid_: Copies, replica count
 
 **Partition leader**:
-The broker that serves all produce and fetch requests for a partition and assigns its offsets.
+The broker that is the authority for a partition: the one that holds its offset sequence and that clients produce to and fetch from.
 _Avoid_: Master, primary, owner
 
 **Follower**:
@@ -57,7 +57,7 @@ A broker that holds a copy of a partition and receives its messages from the par
 _Avoid_: Slave, secondary
 
 **Acknowledgement**:
-The partition leader's confirmation to a producer that a message was appended.
+The reply by which a partition leader tells a producer its message has been appended to the partition leader's own log (not necessarily to any follower).
 _Avoid_: Receipt, commit
 
 ## Clients

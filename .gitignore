@@ -37,6 +37,7 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
 ### Project: runtime / generated / local tooling ###
 /data/
 /dependency-reduced-pom.xml

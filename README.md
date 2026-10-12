@@ -24,9 +24,9 @@ New to the terms (controller, partition leader, follower, topic)? See the
   node under `/brokers`; the first to create the ephemeral `/controller` node
   becomes controller and the others watch it and re-elect when it disappears.
 - **Topics and partitions.** A topic is split into N partitions. The
-  controller assigns each partition a leader (round-robin over the registered
-  brokers) and `replicationFactor - 1` followers, and stores the assignment in
-  ZooKeeper under `/topics`.
+  controller assigns each partition a partition leader (round-robin over the
+  registered brokers) and `replicationFactor - 1` followers, and stores the
+  assignment in ZooKeeper under `/topics`.
 - **Segmented, indexed, on-disk log.** Each partition is an append-only log
   split into 1 MiB segments named by their base offset, with a per-segment
   index of offset-to-file-position entries. Every append is forced to disk.
@@ -35,9 +35,9 @@ New to the terms (controller, partition leader, follower, topic)? See the
 - **Request forwarding.** A broker that receives a produce request for a
   partition it does not lead forwards it to the leader; a create-topic request
   sent to a non-controller is forwarded to the controller.
-- **Leader reassignment.** When the controller sees that a partition's leader
-  has left the cluster it assigns a new leader and followers from the
-  remaining brokers.
+- **Partition leader reassignment.** When the controller sees that a
+  partition's leader has left the cluster it assigns a new partition leader
+  and followers from the remaining brokers.
 - **Custom binary protocol.** Produce, fetch, metadata and create-topic
   requests plus internal replicate and topic-notification messages, all over
   plain TCP using Java NIO.
@@ -79,16 +79,18 @@ flowchart LR
 - **Controller.** Exactly one broker holds the ephemeral `/controller` node.
   Only the controller creates topics (requests sent to other brokers are
   forwarded to it), writes partition assignments to ZooKeeper, tells the other
-  brokers to load a new topic, and reassigns partitions whose leader has gone.
+  brokers to load a new topic, and reassigns partitions whose partition leader
+  has gone.
 - **Partition leader.** Serves all produce and fetch traffic for its
   partition and owns the offset sequence.
 - **Followers.** Hold a copy of the partition log, written only by the
-  leader's `REPLICATE` messages. Clients always fetch from the leader.
+  partition leader's `REPLICATE` messages. Clients always fetch from the
+  partition leader.
 - **Metadata.** Every broker answers `METADATA` with the brokers it knows
-  about and, for each topic, each partition's leader and followers. The client
-  uses it to find the leader to talk to.
+  about and, for each topic, each partition's partition leader and followers. The
+  client uses it to find the partition leader to talk to.
 
-### Produce, replicate and ack flow
+### Produce, replicate and acknowledgement flow
 
 ```mermaid
 sequenceDiagram
@@ -102,21 +104,19 @@ sequenceDiagram
     Note over L: append to active segment, fsync, update index
     L-)F: REPLICATE (topic, partition, offset, message), async
     L-->>P: PRODUCE_RESPONSE (offset, status)
-    Note over L,P: The producer is acked here, without waiting for followers
+    Note over L,P: The producer is acknowledged here, without waiting for followers
     Note over F: append to its own log
-    F-->>L: REPLICATE_ACK, only logged by the leader
+    F-->>L: REPLICATE_ACK, only logged by the partition leader
 ```
 
-The producer is acknowledged as soon as the leader has appended and synced the
-message to its own disk. Replication to followers is submitted to a thread pool
-and is not awaited, so the acknowledgement does not mean the message exists on
-any follower. This is comparable to Kafka's `acks=1`, without any in-sync
-replica tracking. If the producer sent the request to a broker that is not the
-partition leader, that broker forwards it to the leader and relays the
-response.
+The producer is acknowledged once the partition leader has appended and synced
+the message to its own disk; replication is not awaited (details in
+[Limitations](#limitations)). If the producer sent the request to a broker that
+is not the partition leader, that broker forwards it to the partition leader
+and relays the response.
 
-Consumers fetch from the leader of the partition by offset (`FETCH`); the
-leader answers with the messages starting at that offset, up to `maxBytes`.
+Consumers fetch from the partition leader by offset (`FETCH`); the
+partition leader answers with the messages starting at that offset, up to `maxBytes`.
 
 ## Quick Start
 
@@ -134,8 +134,8 @@ docker compose up --build
 The first run builds the shaded jar inside Docker and pulls the ZooKeeper image.
 Wait until the logs show `Elected controller is ...` and each broker prints
 `SimpleKafka broker started`. The brokers start one after another (a few
-seconds apart); that is intentional, because brokers started at the same instant
-can end up with an incomplete view of the cluster.
+seconds apart) on purpose; see
+[Simultaneous broker startup can race](#limitations).
 
 Brokers 1, 2 and 3 listen on `localhost:9092`, `9093` and `9094`, but only
 inside the cluster's network namespace; no ports are published to the host.
@@ -243,7 +243,7 @@ many bytes.
 | `FETCH` | `string topic`, `int partition`, `long offset`, `int maxBytes` | The broker does not check that it leads the partition; the client sends it to the leader. |
 | `METADATA` | (empty) | One-byte request. |
 | `CREATE_TOPIC` | `string topic`, `int numPartitions`, `short replicationFactor` | A non-controller forwards it to the controller. |
-| `REPLICATE` | `string topic`, `int partition`, `long offset`, `bytes message` | Leader to follower, internal. |
+| `REPLICATE` | `string topic`, `int partition`, `long offset`, `bytes message` | Partition leader to follower, internal. |
 | `TOPIC_NOTIFICATION` | `string topic` | Controller to broker, internal. Tells the broker to load the topic from ZooKeeper. |
 
 ### Responses
@@ -273,7 +273,8 @@ the simpler choice was made here. The known consequences are listed in
   tries to create the ephemeral `/controller` node; whoever creates it is
   controller, and everyone else sets a watch on it and re-runs the election
   when it changes. Brokers also watch `/brokers` to keep their cluster view
-  and, on change, the controller reassigns partitions whose leader has gone.
+  and, on change, the controller reassigns partitions whose partition leader
+  has gone.
 - **Kafka.** The same ZooKeeper-era mechanism (ephemeral `/controller` node),
   but with a monotonically increasing controller epoch that fences a stale
   controller, and the controller pushes leader and ISR changes to every
@@ -281,17 +282,17 @@ the simpler choice was made here. The known consequences are listed in
 - **Trade-off.** An ephemeral node is the smallest correct-looking election
   primitive and is easy to follow, which is the point of the project. Without
   an epoch, a controller that is partitioned from ZooKeeper but still alive
-  is not fenced, and because leader changes are written to ZooKeeper but not
+  is not fenced, and because partition leader changes are written to ZooKeeper but not
   broadcast, other brokers learn of them only when they restart and reload topics.
 
 ### Replication and acknowledgement
 
-- **Here.** The leader appends and fsyncs, submits one `REPLICATE` task per
-  follower to a thread pool, and replies to the producer immediately. The
-  leader pushes to followers; followers append whatever arrives, and the ack
-  is only logged. Because each `REPLICATE` is an independent task on its own
-  connection, nothing guarantees followers apply messages in the leader's
-  order.
+- **Here.** The partition leader appends and fsyncs, submits one `REPLICATE`
+  task per follower to a thread pool, and replies to the producer immediately.
+  It pushes to followers, which append whatever arrives; the acknowledgement
+  from the follower is only logged. Each `REPLICATE` is an independent task on
+  its own connection, so followers may apply messages out of order (see
+  [Limitations](#limitations)).
 - **Kafka.** Followers pull from the leader with fetch requests, so they can
   resume from their own log end offset after a gap. The leader tracks an
   in-sync replica set and a high watermark, only exposes messages below the
@@ -299,21 +300,21 @@ the simpler choice was made here. The known consequences are listed in
   in-sync replica has the message (subject to `min.insync.replicas`). Leader
   epochs let a returning replica truncate divergent entries.
 - **Trade-off.** Push-and-forget is the shortest path to a visible
-  leader-to-follower copy and keeps the produce latency to one local fsync.
+  partition-leader-to-follower copy and keeps the produce latency to one local fsync.
   It is roughly Kafka's `acks=1` with no ISR bookkeeping, and gives none of
   the guarantees the pull-based design provides: no catch-up, no truncation
-  and no way to say which replica is safe to promote.
+  and no way to say which follower is safe to promote.
 
 ### Storage
 
 - **Here.** Each partition directory holds segments named by their 20-digit
-  zero-padded base offset (`.log` plus `.index`). A log record is a 4-byte
-  length followed by the message bytes; an index entry is 16 bytes (`long`
+  zero-padded base offset (`.log` plus `.index`). Each message is stored as a
+  4-byte length followed by the message bytes; an index entry is 16 bytes (`long`
   offset, `long` file position) written for every message, so a lookup is a
   seek to `(offset - baseOffset) * 16`. A new segment starts once the active
   log is at least 1 MiB when an append arrives. Both files are forced to disk
   on every append. On restart the next offset is rebuilt by scanning the last
-  segment's records.
+  segment's messages.
 - **Kafka.** Messages are written in batches with a CRC, timestamps and
   headers; the offset index is sparse (one entry per few KiB) and searched
   with a binary search, and there is a separate time index. Segments default
@@ -350,20 +351,29 @@ source:
 
 **Durability and replication**
 
-- **Producer acks do not wait for replication.** The leader responds after its
-  own local append; replication is fire-and-forget and a failed replicate is
-  only logged. There is no in-sync-replica set, high watermark or minimum
-  replica setting, so an acknowledged message can be lost if the leader fails
-  before replicating.
-- **Followers never catch up.** A follower appends whatever the leader sends
-  and does not check the offset (there is a `TODO: Repair the log` in
-  `handleReplicationRequest`). A follower that was down misses those messages
-  permanently.
-- **Failover is simplistic.** When a leader disappears, the controller picks
-  the first broker in its cluster view as the new leader, which is not
-  necessarily a replica that holds the data. There are no leader epochs or log
-  truncation, and the other brokers are not told about the reassignment, so
-  their in-memory view of the leader can go stale.
+- **Acknowledgements do not wait for replication.** The partition leader
+  acknowledges the producer after its own local append and syncs it to disk;
+  replication is fire-and-forget and a failed replicate is only logged. There
+  is no in-sync set, high watermark or minimum-in-sync setting (comparable to
+  Kafka's `acks=1`), so an acknowledged message can be lost if the partition
+  leader fails before replicating.
+- **Followers never catch up, and may apply messages out of order.** A
+  follower appends whatever the partition leader sends and does not check the
+  offset (there is a `TODO: Repair the log` in `handleReplicationRequest`). A
+  follower that was down misses those messages permanently. Each `REPLICATE`
+  is an independent task on its own connection, so nothing guarantees
+  followers apply messages in the partition leader's order.
+- **Followers are capped at two on reassignment.** Topic creation honours the
+  requested replication factor (up to the cluster size), but when the
+  controller reassigns a partition whose partition leader has left, it assigns
+  at most `min(brokers, 3) - 1` followers, i.e. two, regardless of the
+  topic's replication factor.
+- **Failover is simplistic.** When a partition leader disappears, the
+  controller picks the first broker in its cluster view as the new partition
+  leader, which is not necessarily a follower that holds the data. There are
+  no leader epochs or log truncation, and the other brokers are not told about
+  the reassignment, so their in-memory view of the partition leader can go
+  stale.
 - **No rebalancing on cluster growth.** Partitions are reassigned only when
   their leader has left; adding a broker does not move existing partitions.
 - **Partition directories are inconsistent.** The controller creates a
@@ -372,6 +382,14 @@ source:
   `data/<brokerId>/<topic>/<partition>`, so a restarted controller does not
   pick up the logs it created.
 - **No retention or compaction.** Segments are never deleted.
+- **File descriptor leak.** `Partition.updateIndex` opens a
+  `RandomAccessFile` for the index on every append and never closes it, and
+  `readMessages` does not close its log file on the normal path, so a
+  long-running broker accumulates open file descriptors.
+- **A first message larger than `maxBytes` stalls the consumer.**
+  `readMessages` stops before a message that does not fit in `maxBytes` and,
+  when it is the first one, returns nothing. The consumer then asks for the
+  same offset again forever.
 
 **Deployment**
 
@@ -387,7 +405,7 @@ source:
   instant can end up with an incomplete view of the cluster (observed while
   verifying the Quick Start; the broker list is kept up to date by one-shot
   ZooKeeper watches that are re-armed in their callback). The Compose file
-  staggers startup to avoid this.
+  and the plain `java -jar` instructions therefore stagger startup.
 
 **Protocol and clients**
 
@@ -396,7 +414,7 @@ source:
   4 KiB read, so large messages, fetches and metadata responses are not
   supported.
 - **Producer.** Sends each message on a new connection to a random partition;
-  there are no keys, batching, retries or configurable acks.
+  there are no keys, batching, retries or configurable acknowledgement levels.
 - **Consumer.** Reads a single partition, has no consumer groups or committed
   offsets, and starts from offset 0 unless seeked. The command-line consumer
   waits for Enter on stdin, so it exits immediately if stdin is closed.
@@ -411,9 +429,13 @@ source:
   the advertised address, so Docker no longer needs a shared network namespace.
 - Make broker registration and controller election safe under simultaneous
   startup.
-- Follower catch-up and truncation, an in-sync replica set and a high
-  watermark so consumers only see replicated data.
-- Notify all brokers of leader changes and pick new leaders from replicas.
+- Follower catch-up and truncation, an in-sync set of followers and a high
+  watermark so consumers only see replicated data; apply replicated messages
+  in order.
+- Notify all brokers of partition leader changes and pick new partition
+  leaders from followers; do not cap followers on reassignment.
+- Close the index and log files in `Partition`, and make `readMessages`
+  return an oversized first message (or fail loudly) instead of nothing.
 - Fix the partition directory layout so a restarted controller recovers its
   logs.
 - Length-prefixed framing for requests and responses.
