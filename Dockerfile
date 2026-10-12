@@ -7,4 +7,4 @@ RUN mvn -B -q package -DskipTests
 
 FROM eclipse-temurin:25-jre
 WORKDIR /app
-COPY --from=build /build/target/SimpleKafka-1.0-SNAPSHOT.jar /app/simplekafka.jar
+COPY --from=build /build/target/SimpleKafka-*.jar /app/simplekafka.jar

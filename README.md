@@ -7,8 +7,8 @@ A from-scratch, educational Kafka-style distributed log in Java.
 
 SimpleKafka re-implements the core ideas behind Apache Kafka in a small
 codebase (about 2,500 lines of Java): a ZooKeeper-elected controller,
-partitioned append-only logs, leader/follower replication and a custom binary
-protocol over plain TCP, with a producer and consumer client.
+partitioned append-only logs, partition leader and follower replication and a
+custom binary protocol over plain TCP, with a producer and consumer client.
 
 **This is a learning project, not production Kafka.** It is not
 wire-compatible with Apache Kafka, it has no tests yet, and it makes several
@@ -30,13 +30,13 @@ New to the terms (controller, partition leader, follower, topic)? See the
 - **Segmented, indexed, on-disk log.** Each partition is an append-only log
   split into 1 MiB segments named by their base offset, with a per-segment
   index of offset-to-file-position entries. Every append is forced to disk.
-- **Leader/follower replication.** Producers write to the partition leader,
+- **Partition leader and follower replication.** Producers write to the partition leader,
   which appends locally and then replicates to its followers.
 - **Request forwarding.** A broker that receives a produce request for a
-  partition it does not lead forwards it to the partition leader; a create-topic request
-  sent to a non-controller is forwarded to the controller.
+  partition it does not lead forwards it to the partition leader; a
+  create-topic request sent to a non-controller is forwarded to the controller.
 - **Partition leader reassignment.** When the controller sees that a
-  partition's leader has left the cluster it assigns a new partition leader
+  partition leader has left the cluster it assigns a new partition leader
   and followers from the remaining brokers.
 - **Custom binary protocol.** Produce, fetch, metadata and create-topic
   requests plus internal replicate and topic-notification messages, all over
@@ -102,7 +102,7 @@ sequenceDiagram
     P->>B: METADATA request
     B-->>P: brokers, topics, partition leaders
     P->>L: PRODUCE (topic, partition, message)
-    Note over L: append to active segment, fsync, update index
+    Note over L: append to active segment (fsync), update index (fsync)
     L-)F: REPLICATE (topic, partition, offset, message), async
     L-->>P: PRODUCE_RESPONSE (offset, status)
     Note over L,P: The producer is acknowledged here, without waiting for followers
@@ -208,9 +208,9 @@ are `<brokerId> <brokerHost> <brokerPort> [zooKeeperPort]` (ZooKeeper port
 defaults to 2181):
 
 ```bash
-java -jar target/SimpleKafka-1.0-SNAPSHOT.jar 1 localhost 9092 2182
-java -jar target/SimpleKafka-1.0-SNAPSHOT.jar 2 localhost 9093 2182
-java -jar target/SimpleKafka-1.0-SNAPSHOT.jar 3 localhost 9094 2182
+java -jar target/SimpleKafka-*.jar 1 localhost 9092 2182
+java -jar target/SimpleKafka-*.jar 2 localhost 9093 2182
+java -jar target/SimpleKafka-*.jar 3 localhost 9094 2182
 ```
 
 The first broker logs `Elected controller is 1`. Brokers write their logs under
@@ -219,10 +219,10 @@ The first broker logs `Elected controller is 1`. Brokers write their logs under
 Produce and consume (in two more terminals):
 
 ```bash
-java -cp target/SimpleKafka-1.0-SNAPSHOT.jar \
+java -cp target/SimpleKafka-*.jar \
   com.simplekafka.client.SimpleKafkaProducer localhost 9092 demo
 
-java -cp target/SimpleKafka-1.0-SNAPSHOT.jar \
+java -cp target/SimpleKafka-*.jar \
   com.simplekafka.client.SimpleKafkaConsumer localhost 9092 demo 0
 ```
 
